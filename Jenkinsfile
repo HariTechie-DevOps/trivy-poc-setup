@@ -2,30 +2,23 @@ pipeline {
 
     agent any
 
-    // ────────────────────────────────────────────────────────
-    // CHANGE THESE 4 VALUES ONLY
-    // ────────────────────────────────────────────────────────
+    // ── CHANGE ONLY THESE 3 VALUES ──────────────────────────
     environment {
-        APP_NAME     = "trivy-poc-app"
-        AWS_REGION   = "ap-south-1"
-        ECR_ACCOUNT  = "471112521862"          // e.g. 123456789012
-        EMAIL_TO     = "s.harisankar21122002@gmail.com"
-    }
+        APP_NAME    = "trivy-poc-app"
+        AWS_REGION  = "ap-south-1"
+        ECR_ACCOUNT = "YOUR_AWS_ACCOUNT_ID"       // 12-digit AWS account ID
+        EMAIL_TO    = "YOUR_EMAIL@gmail.com"       // your gmail
 
-    // ────────────────────────────────────────────────────────
-    // DO NOT CHANGE BELOW THIS LINE
-    // ────────────────────────────────────────────────────────
-    environment {
-        IMAGE_TAG    = "${BUILD_NUMBER}"
-        IMAGE_NAME   = "${APP_NAME}:${BUILD_NUMBER}"
-        ECR_URL      = "${ECR_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-        ECR_IMAGE    = "${ECR_URL}/${APP_NAME}:${BUILD_NUMBER}"
-        REPORT_DIR   = "${WORKSPACE}/reports"
-        REPO_JSON    = "${REPORT_DIR}/repo-scan.json"
-        FS_JSON      = "${REPORT_DIR}/fs-scan.json"
-        IMAGE_JSON   = "${REPORT_DIR}/image-scan.json"
-        HTML_REPORT  = "${REPORT_DIR}/trivy-report.html"
-        CACHE_DIR    = "${WORKSPACE}/.trivy-cache"
+        // ── DO NOT CHANGE BELOW ──────────────────────────────
+        ECR_URL     = "${ECR_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+        ECR_IMAGE   = "${ECR_URL}/${APP_NAME}:${BUILD_NUMBER}"
+        IMAGE_NAME  = "${APP_NAME}:${BUILD_NUMBER}"
+        REPORT_DIR  = "${WORKSPACE}/reports"
+        REPO_JSON   = "${REPORT_DIR}/repo-scan.json"
+        FS_JSON     = "${REPORT_DIR}/fs-scan.json"
+        IMAGE_JSON  = "${REPORT_DIR}/image-scan.json"
+        HTML_REPORT = "${REPORT_DIR}/trivy-report.html"
+        CACHE_DIR   = "${WORKSPACE}/.trivy-cache"
     }
 
     options {
@@ -37,15 +30,15 @@ pipeline {
     stages {
 
         // ════════════════════════════════════════════
-        // STAGE 1 — CHECKOUT
+        // STAGE 1 — CHECKOUT CODE FROM GITHUB
         // ════════════════════════════════════════════
-        stage('Checkout') {
+        stage('1. Checkout') {
             steps {
                 checkout scm
                 sh '''
-                    echo "──────────────────────────────"
-                    echo " CODE CHECKED OUT"
-                    echo "──────────────────────────────"
+                    echo "──────────────────────────"
+                    echo " CHECKOUT DONE"
+                    echo "──────────────────────────"
                     echo "Branch : $(git rev-parse --abbrev-ref HEAD)"
                     echo "Commit : $(git log --oneline -1)"
                     echo "Files  :"
@@ -55,75 +48,71 @@ pipeline {
         }
 
         // ════════════════════════════════════════════
-        // STAGE 2 — INSTALL TRIVY + DOWNLOAD DB
+        // STAGE 2 — SETUP REPORTS FOLDER + TRIVY DB
+        // Trivy is already installed on EC2 manually
+        // We just create folders + update DB cache
         // ════════════════════════════════════════════
-        stage('Install Trivy') {
+        stage('2. Setup') {
             steps {
                 sh '''
-                    echo "──────────────────────────────"
-                    echo " TRIVY SETUP"
-                    echo "──────────────────────────────"
+                    echo "──────────────────────────"
+                    echo " SETUP"
+                    echo "──────────────────────────"
 
+                    # Create report and cache directories
                     mkdir -p ${REPORT_DIR}
                     mkdir -p ${CACHE_DIR}
 
-                    # Install only if not present
-                    if ! command -v trivy >/dev/null 2>&1; then
-                        echo "Installing Trivy..."
-                        sudo apt-get install -y wget gnupg apt-transport-https lsb-release
-                        wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key \
-                            | sudo apt-key add -
-                        echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" \
-                            | sudo tee /etc/apt/sources.list.d/trivy.list
-                        sudo apt-get update -y
-                        sudo apt-get install -y trivy
-                        echo "Trivy installed!"
-                    else
-                        echo "Trivy already installed: $(trivy --version)"
-                    fi
+                    # Trivy already installed — just verify
+                    echo "Trivy version: $(trivy --version)"
 
-                    # Download vulnerability database (cached between builds)
-                    echo "Downloading/updating vulnerability DB..."
-                    trivy image --download-db-only --cache-dir ${CACHE_DIR}
-                    echo "DB ready!"
+                    # Download/update vuln DB into cache
+                    # This is cached so 2nd build onwards is fast
+                    echo "Updating vulnerability database..."
+                    trivy image \
+                        --download-db-only \
+                        --cache-dir ${CACHE_DIR}
+
+                    echo "✅ Setup done"
                 '''
             }
         }
 
         // ════════════════════════════════════════════
         // STAGE 3 — TRIVY REPO SCAN
-        // Scans: secrets in code + IaC misconfigs
-        //        + vulnerable package files
+        // What it scans:
+        //   - Hardcoded secrets in code files
+        //   - Vulnerable package versions
+        //     (requirements.txt, package.json etc)
+        //   - IaC misconfigs (Dockerfile, k8s yaml)
         // ════════════════════════════════════════════
-        stage('Trivy: Repo Scan') {
+        stage('3. Trivy Repo Scan') {
             steps {
                 sh '''
-                    echo "──────────────────────────────"
+                    echo "──────────────────────────"
                     echo " TRIVY REPO SCAN"
-                    echo " Target : git repository"
-                    echo " Finds  : secrets, misconfigs"
-                    echo "          vulnerable deps"
-                    echo "──────────────────────────────"
+                    echo "──────────────────────────"
 
+                    # Save full result as JSON (used in HTML report)
                     trivy repo \
-                        --cache-dir  ${CACHE_DIR} \
-                        --scanners   secret,misconfig,vuln \
-                        --format     json \
-                        --output     ${REPO_JSON} \
-                        --exit-code  0 \
+                        --cache-dir ${CACHE_DIR} \
+                        --scanners  secret,misconfig,vuln \
+                        --format    json \
+                        --output    ${REPO_JSON} \
+                        --exit-code 0 \
                         . || true
 
+                    # Print summary to Jenkins console log
                     echo ""
-                    echo "CONSOLE SUMMARY:"
+                    echo "SUMMARY:"
                     trivy repo \
-                        --cache-dir  ${CACHE_DIR} \
-                        --scanners   secret,misconfig,vuln \
-                        --format     table \
-                        --exit-code  0 \
+                        --cache-dir ${CACHE_DIR} \
+                        --scanners  secret,misconfig,vuln \
+                        --format    table \
+                        --exit-code 0 \
                         . || true
 
-                    echo ""
-                    echo "✅ Repo scan done → ${REPO_JSON}"
+                    echo "✅ Repo scan done"
                 '''
             }
             post {
@@ -136,38 +125,37 @@ pipeline {
 
         // ════════════════════════════════════════════
         // STAGE 4 — TRIVY FILESYSTEM SCAN
-        // Scans: all workspace files deeply
-        //        Dockerfile misconfigs, secrets
+        // What it scans:
+        //   - Every file in workspace
+        //   - Dockerfile misconfigurations
+        //   - Secrets in any config files
+        //   - Vulnerable packages in lock files
         // ════════════════════════════════════════════
-        stage('Trivy: Filesystem Scan') {
+        stage('4. Trivy Filesystem Scan') {
             steps {
                 sh '''
-                    echo "──────────────────────────────"
+                    echo "──────────────────────────"
                     echo " TRIVY FILESYSTEM SCAN"
-                    echo " Target : workspace files"
-                    echo " Finds  : Dockerfile issues,"
-                    echo "          secrets, misconfigs"
-                    echo "──────────────────────────────"
+                    echo "──────────────────────────"
 
                     trivy fs \
-                        --cache-dir  ${CACHE_DIR} \
-                        --scanners   vuln,secret,misconfig \
-                        --format     json \
-                        --output     ${FS_JSON} \
-                        --exit-code  0 \
+                        --cache-dir ${CACHE_DIR} \
+                        --scanners  vuln,secret,misconfig \
+                        --format    json \
+                        --output    ${FS_JSON} \
+                        --exit-code 0 \
                         . || true
 
                     echo ""
-                    echo "CONSOLE SUMMARY:"
+                    echo "SUMMARY:"
                     trivy fs \
-                        --cache-dir  ${CACHE_DIR} \
-                        --scanners   vuln,secret,misconfig \
-                        --format     table \
-                        --exit-code  0 \
+                        --cache-dir ${CACHE_DIR} \
+                        --scanners  vuln,secret,misconfig \
+                        --format    table \
+                        --exit-code 0 \
                         . || true
 
-                    echo ""
-                    echo "✅ Filesystem scan done → ${FS_JSON}"
+                    echo "✅ Filesystem scan done"
                 '''
             }
             post {
@@ -179,19 +167,18 @@ pipeline {
         }
 
         // ════════════════════════════════════════════
-        // STAGE 5 — DOCKER BUILD
+        // STAGE 5 — BUILD DOCKER IMAGE
         // ════════════════════════════════════════════
-        stage('Docker: Build') {
+        stage('5. Docker Build') {
             steps {
                 sh '''
-                    echo "──────────────────────────────"
+                    echo "──────────────────────────"
                     echo " DOCKER BUILD"
-                    echo " Image : ${IMAGE_NAME}"
-                    echo "──────────────────────────────"
+                    echo " Image: ${IMAGE_NAME}"
+                    echo "──────────────────────────"
 
                     docker build -t ${IMAGE_NAME} .
 
-                    echo ""
                     echo "✅ Image built: ${IMAGE_NAME}"
                     docker images | grep ${APP_NAME}
                 '''
@@ -200,38 +187,40 @@ pipeline {
 
         // ════════════════════════════════════════════
         // STAGE 6 — TRIVY IMAGE SCAN
-        // Scans: OS packages CVEs, app library CVEs,
-        //        secrets baked into image layers
+        // What it scans:
+        //   - All OS packages inside the image
+        //     (debian/ubuntu/alpine packages)
+        //   - All app libraries installed
+        //     (python pip, node npm etc)
+        //   - Secrets baked into image layers
+        //   - Image misconfigurations
         // ════════════════════════════════════════════
-        stage('Trivy: Image Scan') {
+        stage('6. Trivy Image Scan') {
             steps {
                 sh '''
-                    echo "──────────────────────────────"
+                    echo "──────────────────────────"
                     echo " TRIVY IMAGE SCAN"
-                    echo " Target : ${IMAGE_NAME}"
-                    echo " Finds  : OS CVEs, app CVEs,"
-                    echo "          baked-in secrets"
-                    echo "──────────────────────────────"
+                    echo " Target: ${IMAGE_NAME}"
+                    echo "──────────────────────────"
 
                     trivy image \
-                        --cache-dir  ${CACHE_DIR} \
-                        --scanners   vuln,secret,misconfig \
-                        --format     json \
-                        --output     ${IMAGE_JSON} \
-                        --exit-code  0 \
+                        --cache-dir ${CACHE_DIR} \
+                        --scanners  vuln,secret,misconfig \
+                        --format    json \
+                        --output    ${IMAGE_JSON} \
+                        --exit-code 0 \
                         ${IMAGE_NAME} || true
 
                     echo ""
-                    echo "CONSOLE SUMMARY:"
+                    echo "SUMMARY:"
                     trivy image \
-                        --cache-dir  ${CACHE_DIR} \
-                        --scanners   vuln,secret,misconfig \
-                        --format     table \
-                        --exit-code  0 \
+                        --cache-dir ${CACHE_DIR} \
+                        --scanners  vuln,secret,misconfig \
+                        --format    table \
+                        --exit-code 0 \
                         ${IMAGE_NAME} || true
 
-                    echo ""
-                    echo "✅ Image scan done → ${IMAGE_JSON}"
+                    echo "✅ Image scan done"
                 '''
             }
             post {
@@ -243,9 +232,9 @@ pipeline {
         }
 
         // ════════════════════════════════════════════
-        // STAGE 7 — PUSH TO ECR
+        // STAGE 7 — PUSH TO AWS ECR
         // ════════════════════════════════════════════
-        stage('Push to ECR') {
+        stage('7. Push to ECR') {
             steps {
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
@@ -254,18 +243,18 @@ pipeline {
                     secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
                 ]]) {
                     sh '''
-                        echo "──────────────────────────────"
+                        echo "──────────────────────────"
                         echo " PUSH TO ECR"
-                        echo " Repo : ${APP_NAME}"
-                        echo "──────────────────────────────"
+                        echo "──────────────────────────"
 
                         # Login to ECR
-                        aws ecr get-login-password --region ${AWS_REGION} \
+                        aws ecr get-login-password \
+                            --region ${AWS_REGION} \
                             | docker login \
                                 --username AWS \
                                 --password-stdin ${ECR_URL}
 
-                        # Create ECR repo if it doesn't exist
+                        # Create repo if not exists
                         aws ecr describe-repositories \
                             --repository-names ${APP_NAME} \
                             --region ${AWS_REGION} 2>/dev/null \
@@ -277,8 +266,7 @@ pipeline {
                         docker tag ${IMAGE_NAME} ${ECR_IMAGE}
                         docker push ${ECR_IMAGE}
 
-                        echo ""
-                        echo "✅ Pushed to ECR: ${ECR_IMAGE}"
+                        echo "✅ Pushed: ${ECR_IMAGE}"
                     '''
                 }
             }
@@ -286,47 +274,49 @@ pipeline {
 
         // ════════════════════════════════════════════
         // STAGE 8 — RUN DOCKER CONTAINER ON EC2
-        // Stops old container and starts new one
+        // Stops old container → starts new one
+        // App will run on port 5000
         // ════════════════════════════════════════════
-        stage('Run Container on EC2') {
+        stage('8. Run Container') {
             steps {
                 sh '''
-                    echo "──────────────────────────────"
+                    echo "──────────────────────────"
                     echo " RUN CONTAINER ON EC2"
-                    echo "──────────────────────────────"
+                    echo "──────────────────────────"
 
                     # Stop and remove old container if running
                     docker stop ${APP_NAME} 2>/dev/null || true
                     docker rm   ${APP_NAME} 2>/dev/null || true
 
-                    # Run new container from the built image
+                    # Start new container
                     docker run -d \
                         --name    ${APP_NAME} \
                         --restart unless-stopped \
                         -p 5000:5000 \
                         ${IMAGE_NAME}
 
-                    # Wait 3 seconds and check it started
+                    # Wait and verify
                     sleep 3
                     docker ps | grep ${APP_NAME}
 
-                    echo ""
-                    echo "✅ Container running: ${APP_NAME}"
-                    echo "   Access at: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):5000"
+                    echo "✅ Container running → http://EC2-IP:5000"
                 '''
             }
         }
 
         // ════════════════════════════════════════════
         // STAGE 9 — GENERATE HTML REPORT
-        // Merges all 3 scan JSONs → 1 HTML report
+        // Merges all 3 JSON scan results into
+        // one beautiful HTML report
+        // Why python? Because Trivy gives 3 separate
+        // JSONs — we merge them into 1 HTML
         // ════════════════════════════════════════════
-        stage('Generate HTML Report') {
+        stage('9. Generate HTML Report') {
             steps {
                 sh '''
-                    echo "──────────────────────────────"
-                    echo " GENERATING HTML REPORT"
-                    echo "──────────────────────────────"
+                    echo "──────────────────────────"
+                    echo " GENERATE HTML REPORT"
+                    echo "──────────────────────────"
 
                     python3 ${WORKSPACE}/generate_report.py \
                         ${REPO_JSON} \
@@ -338,9 +328,13 @@ pipeline {
                         "${IMAGE_NAME}"
 
                     echo ""
+                    echo "Report files:"
                     ls -lh ${REPORT_DIR}/
+
+                    echo "✅ HTML report ready"
                 '''
 
+                // Show report as clickable link in Jenkins UI
                 publishHTML([
                     allowMissing:          true,
                     alwaysLinkToLastBuild: true,
@@ -354,12 +348,15 @@ pipeline {
 
         // ════════════════════════════════════════════
         // STAGE 10 — SEND EMAIL
-        // Sends full HTML report to team
+        // Sends HTML report to your Gmail
+        // JSON files attached as attachments
         // ════════════════════════════════════════════
-        stage('Send Email') {
+        stage('10. Send Email') {
             steps {
                 script {
+                    // Read the generated HTML file
                     def report = readFile("${env.HTML_REPORT}")
+
                     emailext(
                         subject: "[Trivy] ${env.APP_NAME} Build #${env.BUILD_NUMBER} — ${currentBuild.currentResult}",
                         body: report,
@@ -367,6 +364,7 @@ pipeline {
                         to: "${env.EMAIL_TO}",
                         attachmentsPattern: 'reports/*.json'
                     )
+
                     echo "✅ Email sent to ${env.EMAIL_TO}"
                 }
             }
@@ -374,24 +372,40 @@ pipeline {
 
     } // end stages
 
-    // ────────────────────────────────────────────────────────
-    // POST BUILD
-    // ────────────────────────────────────────────────────────
+    // ────────────────────────────────────────────────
+    // POST BUILD ACTIONS
+    // ────────────────────────────────────────────────
     post {
         always {
-            echo "═══════════════════════════════"
-            echo " BUILD ${currentBuild.currentResult}"
-            echo "═══════════════════════════════"
+            echo "══════════════════════════════"
+            echo " BUILD: ${currentBuild.currentResult}"
+            echo "══════════════════════════════"
+            // Archive all reports as Jenkins artifacts
             archiveArtifacts artifacts: 'reports/**/*',
                              allowEmptyArchive: true
+            // Cleanup old docker images to save disk space
+            sh '''
+                docker rmi ${IMAGE_NAME} || true
+                docker image prune -f    || true
+            '''
         }
+
+        success {
+            echo "✅ PIPELINE PASSED — App is running on EC2:5000"
+        }
+
         failure {
+            // Send failure alert email
             emailext(
-                subject: "[ALERT] ❌ Build FAILED — ${env.APP_NAME} #${env.BUILD_NUMBER}",
-                body: """<h2 style='color:red'>Pipeline Failed!</h2>
-                         <p>App: <b>${env.APP_NAME}</b></p>
-                         <p>Build: <b>#${env.BUILD_NUMBER}</b></p>
-                         <p>Check: <a href='${env.BUILD_URL}'>${env.BUILD_URL}</a></p>""",
+                subject: "[ALERT] ❌ Pipeline FAILED — ${env.APP_NAME} #${env.BUILD_NUMBER}",
+                body: """
+                    <h2 style='color:red'>Pipeline Failed!</h2>
+                    <p><b>App:</b> ${env.APP_NAME}</p>
+                    <p><b>Build:</b> #${env.BUILD_NUMBER}</p>
+                    <p><b>Check Jenkins:</b>
+                       <a href='${env.BUILD_URL}'>${env.BUILD_URL}</a>
+                    </p>
+                """,
                 mimeType: 'text/html',
                 to: "${env.EMAIL_TO}"
             )
