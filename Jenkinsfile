@@ -8,8 +8,8 @@ pipeline {
     environment {
         APP_NAME     = "trivy-poc-app"
         AWS_REGION   = "ap-south-1"
-        ECR_ACCOUNT  = "YOUR_AWS_ACCOUNT_ID"          // e.g. 123456789012
-        EMAIL_TO     = "YOUR_EMAIL@gmail.com"
+        ECR_ACCOUNT  = "471112521862"          // e.g. 123456789012
+        EMAIL_TO     = "s.harisankar21122002@gmail.com"
     }
 
     // ────────────────────────────────────────────────────────
