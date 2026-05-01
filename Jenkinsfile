@@ -219,25 +219,22 @@ pipeline {
 
     // ✅ FIXED POST BLOCK
     post {
-        always {
-            node {
-                echo "BUILD: ${currentBuild.currentResult}"
+    always {
+        echo "BUILD: ${currentBuild.currentResult}"
 
-                archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+        archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
 
-                sh '''
-                    docker rmi ${IMAGE_NAME} || true
-                    docker image prune -f || true
-                '''
-            }
-        }
+        sh '''
+            docker rmi ${IMAGE_NAME} || true
+            docker image prune -f || true
+        '''
+    }
 
-        failure {
-            emailext(
-                subject: "❌ Pipeline FAILED — ${env.APP_NAME} #${env.BUILD_NUMBER}",
-                body: "Check Jenkins: ${env.BUILD_URL}",
-                to: "${env.EMAIL_TO}"
-            )
-        }
+    failure {
+        emailext(
+            subject: "❌ Pipeline FAILED — ${env.APP_NAME} #${env.BUILD_NUMBER}",
+            body: "Check Jenkins: ${env.BUILD_URL}",
+            to: "${env.EMAIL_TO}"
+        )
     }
 }
