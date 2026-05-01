@@ -16,14 +16,17 @@ pipeline {
         FS_JSON     = "${REPORT_DIR}/fs-scan.json"
         IMAGE_JSON  = "${REPORT_DIR}/image-scan.json"
         HTML_REPORT = "${REPORT_DIR}/trivy-report.html"
-        CACHE_DIR   = "/var/lib/jenkins/.trivy-cache"   // 🔥 GLOBAL CACHE (IMPORTANT)
+
+        // 🔥 FIXED PATHS
+        CACHE_DIR   = "/var/lib/jenkins/.trivy-cache"
+        TEMP_DIR    = "/var/lib/jenkins/tmp"
     }
 
     options {
         timestamps()
         buildDiscarder(logRotator(numToKeepStr: '5'))
         timeout(time: 40, unit: 'MINUTES')
-        durabilityHint('MAX_SURVIVABILITY')   // 🔥 restart-safe
+        durabilityHint('MAX_SURVIVABILITY')
     }
 
     stages {
@@ -34,40 +37,43 @@ pipeline {
             }
         }
 
-        // ✅ FIXED SETUP (NO DB DOWNLOAD EVERY TIME)
         stage('2. Setup') {
             steps {
                 sh '''
                     mkdir -p ${REPORT_DIR}
                     mkdir -p ${CACHE_DIR}
+                    mkdir -p ${TEMP_DIR}
 
                     echo "Trivy version: $(trivy --version)"
 
-                    # 🔥 Only download DB if not exists
+                    # Download DB only if not exists
                     if [ ! -f "${CACHE_DIR}/db/metadata.json" ]; then
-                        echo "Downloading Trivy DB (first time only)..."
-                        trivy image --download-db-only --cache-dir ${CACHE_DIR}
+                        echo "Downloading Trivy DB..."
+                        trivy image \
+                          --download-db-only \
+                          --cache-dir ${CACHE_DIR} \
+                          --temp-dir ${TEMP_DIR}
                     else
-                        echo "✅ Using cached Trivy DB"
+                        echo "✅ Using cached DB"
                     fi
                 '''
             }
         }
 
-        // ✅ RETRY ADDED
         stage('3. Trivy Repo Scan') {
             steps {
                 script {
                     retry(3) {
                         sh '''
                             trivy repo \
-                                --cache-dir ${CACHE_DIR} \
-                                --skip-db-update \
-                                --scanners secret,misconfig,vuln \
-                                --format json \
-                                --output ${REPO_JSON} \
-                                --exit-code 0 \
-                                . || true
+                              --cache-dir ${CACHE_DIR} \
+                              --temp-dir ${TEMP_DIR} \
+                              --skip-db-update \
+                              --scanners secret,misconfig,vuln \
+                              --format json \
+                              --output ${REPO_JSON} \
+                              --exit-code 0 \
+                              . || true
                         '''
                     }
                 }
@@ -85,13 +91,14 @@ pipeline {
                     retry(3) {
                         sh '''
                             trivy fs \
-                                --cache-dir ${CACHE_DIR} \
-                                --skip-db-update \
-                                --scanners vuln,secret,misconfig \
-                                --format json \
-                                --output ${FS_JSON} \
-                                --exit-code 0 \
-                                . || true
+                              --cache-dir ${CACHE_DIR} \
+                              --temp-dir ${TEMP_DIR} \
+                              --skip-db-update \
+                              --scanners vuln,secret,misconfig \
+                              --format json \
+                              --output ${FS_JSON} \
+                              --exit-code 0 \
+                              . || true
                         '''
                     }
                 }
@@ -115,13 +122,14 @@ pipeline {
                     retry(3) {
                         sh '''
                             trivy image \
-                                --cache-dir ${CACHE_DIR} \
-                                --skip-db-update \
-                                --scanners vuln,secret,misconfig \
-                                --format json \
-                                --output ${IMAGE_JSON} \
-                                --exit-code 0 \
-                                ${IMAGE_NAME} || true
+                              --cache-dir ${CACHE_DIR} \
+                              --temp-dir ${TEMP_DIR} \
+                              --skip-db-update \
+                              --scanners vuln,secret,misconfig \
+                              --format json \
+                              --output ${IMAGE_JSON} \
+                              --exit-code 0 \
+                              ${IMAGE_NAME} || true
                         '''
                     }
                 }
@@ -143,17 +151,17 @@ pipeline {
                 ]]) {
                     sh '''
                         aws ecr get-login-password \
-                            --region ${AWS_REGION} \
-                            | docker login \
-                                --username AWS \
-                                --password-stdin ${ECR_URL}
+                          --region ${AWS_REGION} \
+                        | docker login \
+                          --username AWS \
+                          --password-stdin ${ECR_URL}
 
                         aws ecr describe-repositories \
-                            --repository-names ${APP_NAME} \
-                            --region ${AWS_REGION} 2>/dev/null \
+                          --repository-names ${APP_NAME} \
+                          --region ${AWS_REGION} 2>/dev/null \
                         || aws ecr create-repository \
-                            --repository-name ${APP_NAME} \
-                            --region ${AWS_REGION}
+                          --repository-name ${APP_NAME} \
+                          --region ${AWS_REGION}
 
                         docker tag ${IMAGE_NAME} ${ECR_IMAGE}
                         docker push ${ECR_IMAGE}
@@ -169,9 +177,9 @@ pipeline {
                     docker rm ${APP_NAME} 2>/dev/null || true
 
                     docker run -d \
-                        --name ${APP_NAME} \
-                        -p 5000:5000 \
-                        ${IMAGE_NAME}
+                      --name ${APP_NAME} \
+                      -p 5000:5000 \
+                      ${IMAGE_NAME}
                 '''
             }
         }
@@ -180,13 +188,13 @@ pipeline {
             steps {
                 sh '''
                     python3 ${WORKSPACE}/generate_report.py \
-                        ${REPO_JSON} \
-                        ${FS_JSON} \
-                        ${IMAGE_JSON} \
-                        ${HTML_REPORT} \
-                        "${APP_NAME}" \
-                        "${BUILD_NUMBER}" \
-                        "${IMAGE_NAME}"
+                      ${REPO_JSON} \
+                      ${FS_JSON} \
+                      ${IMAGE_JSON} \
+                      ${HTML_REPORT} \
+                      "${APP_NAME}" \
+                      "${BUILD_NUMBER}" \
+                      "${IMAGE_NAME}"
                 '''
 
                 publishHTML([
@@ -217,25 +225,24 @@ pipeline {
         }
     }
 
-    // ✅ FIXED POST BLOCK
     post {
-    always {
-        echo "BUILD: ${currentBuild.currentResult}"
+        always {
+            node {
+                archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
 
-        archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+                sh '''
+                    docker rmi ${IMAGE_NAME} || true
+                    docker image prune -f || true
+                '''
+            }
+        }
 
-        sh '''
-            docker rmi ${IMAGE_NAME} || true
-            docker image prune -f || true
-        '''
+        failure {
+            emailext(
+                subject: "❌ Pipeline FAILED — ${env.APP_NAME} #${env.BUILD_NUMBER}",
+                body: "Check Jenkins: ${env.BUILD_URL}",
+                to: "${env.EMAIL_TO}"
+            )
+        }
     }
-
-    failure {
-        emailext(
-            subject: "❌ Pipeline FAILED — ${env.APP_NAME} #${env.BUILD_NUMBER}",
-            body: "Check Jenkins: ${env.BUILD_URL}",
-            to: "${env.EMAIL_TO}"
-        )
-    }
-}
 }
