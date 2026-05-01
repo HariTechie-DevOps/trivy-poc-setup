@@ -6,8 +6,8 @@ pipeline {
     environment {
         APP_NAME    = "trivy-poc-app"
         AWS_REGION  = "ap-south-1"
-        ECR_ACCOUNT = "YOUR_AWS_ACCOUNT_ID"       // 12-digit AWS account ID
-        EMAIL_TO    = "YOUR_EMAIL@gmail.com"       // your gmail
+        ECR_ACCOUNT = "471112521862"       // 12-digit AWS account ID
+        EMAIL_TO    = "s.harisankar21122002@gmail.com"       // your gmail
 
         // ── DO NOT CHANGE BELOW ──────────────────────────────
         ECR_URL     = "${ECR_ACCOUNT}.dkr.ecr.${AWS_REGION}.amazonaws.com"
