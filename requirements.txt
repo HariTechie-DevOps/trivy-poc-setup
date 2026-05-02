@@ -1,5 +1,4 @@
-# Still vulnerable versions but compatible with python:3.9
-# Trivy will still find CVEs in these
+# Vulnerable versions for Trivy to find CVEs
 Flask==1.0.0
 Werkzeug==0.15.0
 Jinja2==2.10.1
@@ -7,3 +6,5 @@ requests==2.20.0
 PyYAML==5.1
 urllib3==1.24.0
 cryptography==2.5
+# Pin MarkupSafe to compatible version with Flask 1.0 + Jinja2 2.10
+MarkupSafe==2.0.1
