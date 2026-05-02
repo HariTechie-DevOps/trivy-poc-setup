@@ -227,14 +227,12 @@ pipeline {
 
     post {
         always {
-            node {
-                archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
 
-                sh '''
-                    docker rmi ${IMAGE_NAME} || true
-                    docker image prune -f || true
-                '''
-            }
+            sh '''
+                docker rmi ${IMAGE_NAME} || true
+                docker image prune -f || true
+            '''
         }
 
         failure {
