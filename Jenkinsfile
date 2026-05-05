@@ -19,14 +19,12 @@ pipeline {
         HTML_REPORT = "${REPORT_DIR}/trivy-report.html"
 
         CACHE_DIR   = "/var/lib/jenkins/.trivy-cache"
-        TEMP_DIR    = "/var/lib/jenkins/tmp"
     }
 
     options {
         timestamps()
         buildDiscarder(logRotator(numToKeepStr: '5'))
         timeout(time: 40, unit: 'MINUTES')
-        durabilityHint('MAX_SURVIVABILITY')
     }
 
     stages {
@@ -48,16 +46,15 @@ pipeline {
                 sh '''
                     mkdir -p ${REPORT_DIR}
                     mkdir -p ${CACHE_DIR}
-                    mkdir -p ${TEMP_DIR}
 
-                    echo "Trivy version: $(trivy --version)"
+                    echo "Trivy version:"
+                    trivy --version
 
                     if [ ! -f "${CACHE_DIR}/db/metadata.json" ]; then
                         echo "Downloading Trivy DB..."
                         trivy image \
                           --download-db-only \
-                          --cache-dir ${CACHE_DIR} \
-                          --temp-dir ${TEMP_DIR}
+                          --cache-dir ${CACHE_DIR}
                     else
                         echo "Using cached DB"
                     fi
@@ -70,44 +67,34 @@ pipeline {
         // =========================
         stage('3. Repo Scan') {
             steps {
-                script {
-                    retry(3) {
-                        sh '''
-                            trivy repo \
-                              --cache-dir ${CACHE_DIR} \
-                              --temp-dir ${TEMP_DIR} \
-                              --skip-db-update \
-                              --scanners vuln,secret,misconfig \
-                              --format json \
-                              --output ${REPO_JSON} \
-                              --exit-code 0 \
-                              . || true
-                        '''
-                    }
-                }
+                sh '''
+                    trivy repo \
+                      --cache-dir ${CACHE_DIR} \
+                      --skip-db-update \
+                      --scanners vuln,secret,misconfig \
+                      --format json \
+                      --output ${REPO_JSON} \
+                      --exit-code 0 \
+                      .
+                '''
             }
         }
 
         // =========================
-        // 4. FS Scan
+        // 4. Filesystem Scan
         // =========================
         stage('4. Filesystem Scan') {
             steps {
-                script {
-                    retry(3) {
-                        sh '''
-                            trivy fs \
-                              --cache-dir ${CACHE_DIR} \
-                              --temp-dir ${TEMP_DIR} \
-                              --skip-db-update \
-                              --scanners vuln,secret,misconfig \
-                              --format json \
-                              --output ${FS_JSON} \
-                              --exit-code 0 \
-                              . || true
-                        '''
-                    }
-                }
+                sh '''
+                    trivy fs \
+                      --cache-dir ${CACHE_DIR} \
+                      --skip-db-update \
+                      --scanners vuln,secret,misconfig \
+                      --format json \
+                      --output ${FS_JSON} \
+                      --exit-code 0 \
+                      .
+                '''
             }
         }
 
@@ -116,7 +103,9 @@ pipeline {
         // =========================
         stage('5. Docker Build') {
             steps {
-                sh 'docker build -t ${IMAGE_NAME} .'
+                sh '''
+                    docker build -t ${IMAGE_NAME} .
+                '''
             }
         }
 
@@ -125,28 +114,26 @@ pipeline {
         // =========================
         stage('6. Image Scan') {
             steps {
-                script {
-                    retry(3) {
-                        sh '''
-                            trivy image \
-                              --cache-dir ${CACHE_DIR} \
-                              --temp-dir ${TEMP_DIR} \
-                              --skip-db-update \
-                              --scanners vuln,secret,misconfig \
-                              --format json \
-                              --output ${IMAGE_JSON} \
-                              --exit-code 0 \
-                              ${IMAGE_NAME} || true
-                        '''
-                    }
-                }
+                sh '''
+                    trivy image \
+                      --cache-dir ${CACHE_DIR} \
+                      --skip-db-update \
+                      --scanners vuln,secret,misconfig \
+                      --format json \
+                      --output ${IMAGE_JSON} \
+                      --exit-code 0 \
+                      ${IMAGE_NAME}
+                '''
             }
         }
 
         // =========================
-        // 7. Push to ECR
+        // 7. Push to ECR (OPTIONAL)
         // =========================
         stage('7. Push to ECR') {
+            when {
+                expression { return false }   // 🔥 Disable until creds added
+            }
             steps {
                 withCredentials([[
                     $class: 'AmazonWebServicesCredentialsBinding',
@@ -207,11 +194,10 @@ pipeline {
                       "${BUILD_NUMBER}" \
                       "${IMAGE_NAME}"
 
-                    echo "==== DEBUG FILES ===="
+                    echo "Generated files:"
                     ls -lh ${REPORT_DIR}
                 '''
 
-                // 🔥 THIS IS THE MAIN FIX
                 publishHTML(target: [
                     reportName: "🔥 Trivy Security Report",
                     reportDir: 'reports',
@@ -224,7 +210,7 @@ pipeline {
         }
 
         // =========================
-        // 10. Email (Optional)
+        // 10. Email
         // =========================
         stage('10. Email') {
             steps {
@@ -245,14 +231,12 @@ pipeline {
 
     post {
         always {
-            
-                archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'reports/**/*', allowEmptyArchive: true
 
-                sh '''
-                    docker rmi ${IMAGE_NAME} || true
-                    docker image prune -f || true
-                '''
-            
+            sh '''
+                docker rmi ${IMAGE_NAME} || true
+                docker image prune -f || true
+            '''
         }
 
         failure {
