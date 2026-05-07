@@ -126,7 +126,13 @@ pipeline {
                 '''
             }
         }
-
+        stage('Convert to Metrics') {
+            steps {
+                sh '''
+                    python3 trivy_to_prometheus.py
+                '''
+            }
+        }
         // =========================
         // 7. Push to ECR (OPTIONAL)
         // =========================
