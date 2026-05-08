@@ -129,7 +129,7 @@ pipeline {
         stage('Convert to Metrics') {
             steps {
                 sh '''
-                    python3 trivy_to_prometheus.py
+                    python3 /home/ubuntu/trivy_to_prometheus.py
                 '''
             }
         }
